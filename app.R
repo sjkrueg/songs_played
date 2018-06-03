@@ -11,7 +11,7 @@ library(here)
 
 
 #Create here path for relative directory
-path <- here("alexa", "songs_played")
+path <- here()
 
 #Load my sheets (temp commented out, using csv until testing done)
 #my_sheets <- gs_ls()
