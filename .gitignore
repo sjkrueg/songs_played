@@ -14,3 +14,9 @@ vignettes/*.pdf
 
 # OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
 .httr-oauth
+
+alexa_songs_temp\.csv
+
+app_template\.R
+
+songs_played\.R
