@@ -1,73 +1,105 @@
+
 # import libraries
 library(shiny)
 library("googlesheets")
 library(dplyr)
 library(ggplot2)
+library(viridis)
 library(ggrepel)
+library(datetime)
 library(lubridate)
 library(tidyr)
 library(rlang)
 library(here)
+library(markdown)
+library(cowplot)
 
-
-#Create here path for relative directory
+# Create here path for relative directory
 path <- here()
 
-#Load my sheets (temp commented out, using csv until testing done)
-#my_sheets <- gs_ls()
+# Load my sheets (temp commented out, using csv until testing done)
+my_sheets <- gs_ls()
+all_sheets <- grep("Songs played", my_sheets$sheet_title)
+all_sheets <- my_sheets$sheet_title[all_sheets]
 
-#songs_played <- gs_title("Songs played")
-#sp_sheets <- gs_ws_ls(songs_played)
+# no longer just one sheet - songs_played <- gs_title("Songs played")
+# no longer just one sheet - sp_sheets <- gs_ws_ls(songs_played)
 
-#Import data
-#cols <- c("date_time", "artist", "song", "album")
+# Import data
+cols <- c("date_time", "artist", "song", "album")
+alexa_songs <- do.call("rbind", 
+                       lapply(all_sheets, 
+                              FUN=function(files) 
+                              {songs_played <- gs_title(files)
+                              sp_sheets <- gs_ws_ls(songs_played)
+                              songs_played %>%
+                                gs_read(ws = sp_sheets[1], col_names = cols)}))
 
-#alexa_songs <- songs_played %>%
-#  gs_read(ws = sp_sheets[1], col_names = cols)
 
-#Temp read csv for testing
-alexa_songs <- read.csv(paste(path, "alexa_songs_temp.csv", sep = "/"), stringsAsFactors = FALSE, encoding = "UTF-8")
-alexa_songs$X <- NULL
+# no longer just one sheet - alexa_songs <- songs_played %>%
+# no longer just one sheet -   gs_read(ws = sp_sheets[1], col_names = cols)
 
-#Clean data
+# Copy for raw data export
+raw_data <- alexa_songs[sample(nrow(alexa_songs), 30), ]
+
+# Clean data
 alexa_songs$date_time <- strptime(alexa_songs$date_time, format = "%B %e, %Y at %I:%M%p")
-#Force Eastern Time, may not be necessary
+
+# Force Eastern Time, may not be necessary
 alexa_songs$date_time <- as.POSIXct(alexa_songs$date_time)
 alexa_songs$date_time <- force_tz(alexa_songs$date_time, tzone = "America/New_York")
-alexa_songs <- separate(data = alexa_songs, col = artist, into = c("main_artist", "featuring"), sep = " \\[feat. ")
+alexa_songs <- alexa_songs[order(alexa_songs$date_time),] 
+alexa_songs <- separate(data = alexa_songs, col = artist, into = c("main_artist", "featuring"), sep = " \\[feat. | \\(feat. ")
 
-#Clean artist field and create featuring field (Does not split duets)
+# Clean artist field and create featuring field (Does not split duets)
 alexa_songs$featuring <- gsub('\\]', '', alexa_songs$featuring)
+alexa_songs$featuring <- gsub('\\)', '', alexa_songs$featuring)
 
-#Clean album field (special consideration for lynyrd skynyrd album)
-#TO DO: force first letter caps, account for " - clean/explicit/..." cases
+# Clean album field (special consideration for lynyrd skynyrd album)
 alexa_songs$album <- gsub("\\(Pronounced \\'Leh\\-\\'Nérd \\'Skin\\-\\'Nérd\\)", 
                           "Pronounced \\'Leh\\-\\'Nérd \\'Skin\\-\\'Nérd", 
                           alexa_songs$album)
 alexa_songs$album <- trimws(sub("\\[.*|\\(.*", "", alexa_songs$album))
 
-#create min and max date values for filter selection
+# Clean song field to filter out explicit, clean, etc. tags
+alexa_songs$song <- trimws(sub("\\[Exp.*|\\[Cle.*|\\(Alb.*|\\(Remas.*|\\(Main.*|\\(Live.*|\\(Orig.*|\\(Amazon.*|\\(From.*|\\(LP.*|\\(\\d{4}.*", 
+                               "", 
+                               alexa_songs$song))
+
+# Create min and max date values for filter selection
 min_date <- min(as_date(alexa_songs$date_time))
 max_date <- max(as_date(alexa_songs$date_time))
 
-#add additional time fields so calculations only need to be made once
+# Add additional time fields so calculations only need to be made once
 alexa_songs <- mutate(alexa_songs, 
                       Date = date(date_time),
                       Week_Day = wday(date_time, label = TRUE),
-                      Week = week(date_time),
-                      Month = month(date_time, label = TRUE))
+                      Week = epiweek(date_time),
+                      Month = month(date_time, label = TRUE),
+                      Year = year(date_time),
+                      Time = as.time(strftime(date_time, format = "%H:%M")),
+                      id = row_number())
+
+# Keep only songsthat were not skipped (if two songs have the same time-stamp, the one with a lower id was skipped)
+alexa_songs <- alexa_songs %>% 
+  group_by(date_time) %>% 
+  top_n(1, id) %>% 
+  ungroup()
+
+# id column no longer needed
+alexa_songs$id <- NULL
 
 # radio selection buttons in ui for time grouping values
-time_group_pairs <- c("Date" = "Date",
-                      "Week Day" = "Week_Day",
+time_group_pairs <- c("Day" = "Date",
                       "Week" = "Week",
-                      "Month" = "Month")
+                      "Month" = "Month",
+                      "Day of Week" = "Week_Day")
 
 ##########
 # SERVER #
 ##########
 
-#generic line initiating the SERVER 
+# Generic line initiating the SERVER 
 
 server <- shinyServer(function(input, output) {
   
@@ -90,7 +122,8 @@ server <- shinyServer(function(input, output) {
     top_songs <- songs_selected() %>%
       count(main_artist, song, sort = T) %>%
       top_n(10) %>%
-      unite(art_song, main_artist, song, sep = " - ", remove = F)
+      unite(art_song, main_artist, song, sep = " - ", remove = F) %>%
+      head(10)
     
     # Add newline character to field used for labelling for two line labels
     top_songs$art_song <- gsub(" \\[feat.", "\nFeat.", top_songs$art_song)
@@ -110,26 +143,26 @@ server <- shinyServer(function(input, output) {
     songs_selected() %>%
       group_by(!! art_alb) %>%
       mutate(sum_played = n_distinct(date_time)) %>%
-      group_by(!! art_alb, Month, sum_played) %>%
+      group_by(!! art_alb, Year, sum_played) %>%
       summarise(played_count = n_distinct(date_time)) %>% 
-      group_by(Month) %>%
+      group_by(Year) %>%
       mutate(rank = rank(-played_count, ties.method="min")) ##%>%
       ##subset(played_count > 1 & rank <= 5)
     
   })
   
-  main_plot_options <- reactive({
+  rank_plot_options <- reactive({
     req(input$y_axis)
     
     # Convert input to symbol for dplyr
     g_by <- input$y_axis
     g_by <- sym(g_by)
     
-    # Create tribble of rankings by number of songs played each month
+    # Create tribble of rankings by number of songs played each Year
     songs_selected_rank <- songs_selected() %>%
-      group_by(!! g_by, Month) %>%
+      group_by(!! g_by, Year) %>%
       summarise(played_count = n_distinct(date_time)) %>%
-      group_by(Month) %>%
+      group_by(Year) %>%
       mutate(rank = rank(-played_count, ties.method="min")) 
     
     # Select only songs played more than once and have a ranking of 5 or better
@@ -137,91 +170,177 @@ server <- shinyServer(function(input, output) {
     
     if (input$y_axis == "main_artist") {
       ssq <- songs_selected_rank$main_artist
-      title_text <- 'Top Five Artists Each Month'
+      title_text <- 'Top Five Artists Each Year'
     } else {
       ssq <- songs_selected_rank$album
-      title_text <- 'Top Five Albums Each Month'
+      title_text <- 'Top Five Albums Each Year'
     }
     
     # Label song only first time it appears and final month
     song_first_appearance <- songs_selected_rank[!duplicated(ssq),]
-    song_first_appearance <- song_first_appearance[which(song_first_appearance$Month < max(songs_selected_rank$Month)),]
-    song_final_month <- songs_selected_rank[which(songs_selected_rank$Month == max(songs_selected_rank$Month)),]
-    label_vect <- unique(songs_selected_rank$Month)
+    song_first_appearance <- song_first_appearance[which(song_first_appearance$Year < max(songs_selected_rank$Year)),]
+    song_final_year <- songs_selected_rank[which(songs_selected_rank$Year == max(songs_selected_rank$Year)),]
+    label_vect <- unique(songs_selected_rank$Year)
     
     # Build bump chart
-    rank_plot <- ggplot(songs_selected_rank, aes(x=as.integer(Month), y=rank)) +
+    rank_plot <- ggplot(songs_selected_rank, aes(x=as.integer(Year), y=rank)) +
       geom_line(aes_(colour = g_by), 
                 size = 1.5, 
                 alpha = .7) +
       geom_point(shape = 21, 
-                 stroke=2,
-                 size=5, 
-                 colour="white",
+                 stroke = 2,
+                 size = 5, 
+                 colour = "white",
                  aes_(fill=g_by)) + 
       geom_label_repel(data = song_first_appearance, 
                        aes_(label=g_by), 
-                       size=2.5, 
+                       size = 2.5, 
                        fontface = "bold", 
-                       color='#2f2f2f', 
+                       color = "#2f2f2f", 
                        nudge_x = -.075) + 
-      geom_label(data = song_final_month, 
-                 aes_(x = quote(as.integer(Month)), 
-                      y = quote(rank), 
-                      label = g_by),
-                 size = 2.5, 
-                 color= '#2f2f2f', 
-                 fontface = "bold", 
-                 hjust=-.05) + 
-      scale_y_reverse(lim=c(5,1), 
+      geom_label_repel(data = song_final_year, 
+                       aes_(x = quote(as.integer(Year)),
+                            y = quote(rank), 
+                            label = g_by),
+                       size = 2.5, 
+                       color = '#2f2f2f', 
+                       fontface = "bold", 
+                       nudge_x = .04) +
+      scale_y_reverse(lim = c(5,1), 
                       breaks = scales::pretty_breaks(n = 5)) +
-      scale_x_continuous(limits = c(min(as.integer(songs_selected_rank$Month)), max(as.integer(songs_selected_rank$Month)) + .2),
-                         expand = c(.05, .05), 
-                         breaks = as.integer(min(label_vect)):as.integer(max(label_vect)), 
-                         labels = as.character(label_vect)) +
+      scale_x_continuous(limits = c(min(as.integer(songs_selected_rank$Year)), max(as.integer(songs_selected_rank$Year)) + .2),
+                         expand = c(.05, .05),
+                         breaks = as.integer(min(label_vect)):as.integer(max(label_vect)),
+                         labels = sort(label_vect)) +
       ggtitle(title_text) +
-      xlab("Month") +
-      ylab("Rank") +
+      labs(x = "Year", 
+           y = "Rank") +
       theme_minimal() +
       theme_bw() +
-      theme(panel.background = element_rect(fill = '#ffffff'),
-            plot.title = element_text(size = 18, face = "bold", hjust = 0.5, margin = margin(15,0,10,0,"pt")),
-            legend.title=element_blank(),
-            axis.text = element_text(size=10), 
-            axis.title=element_text(size=11), 
+      theme(panel.background = element_rect(fill = "#ffffff"),
+            plot.title = element_text(size = 18, face = "bold", hjust = 0.5, margin = margin(15, 0, 10, 0, "pt")),
+            legend.title = element_blank(),
+            axis.text = element_text(size = 10), 
+            axis.title = element_text(size = 14), 
             panel.border = element_blank(), 
-            legend.position='none', 
+            legend.position = "none", 
             panel.grid.minor.x = element_blank(), 
             panel.grid.minor.y = element_blank(),
             axis.ticks.x=element_blank(), 
             axis.ticks.y=element_blank(), 
             panel.grid.major.y = element_blank(), 
-            panel.grid.major.x = element_line(linetype = 'dashed'))
+            panel.grid.major.x = element_line(color = "grey80", linetype = "56"))
     
     rank_plot
     
   })
   
-  plot2_options <- reactive({ 
+  freq_plot_options <- reactive({ 
     req(input$time_type)
     xvar_name <- names(time_group_pairs)[time_group_pairs == input$time_type]
     
-    if (input$time_type %in% c('Date', 'Week_Day', 'Week')) {
-      fill_col = 'Month'
-      fill_guide = 'Month'
+    # establish column grouping based on input
+    if (input$time_type %in% c('Date', 'Week')) {
+      fill_col <- 'Week_Day'
+      fill_guide <- 'Week Day'
+      group_col <- 'Date'
+      scale_x <- scale_x_continuous(expand = c(0.02, 0))
+    } else if (input$time_type == 'Week_Day') {
+      fill_col <- 'as.integer(Time)'
+      fill_guide <- 'Time of Day'
+      group_col <- 'as.integer(Time)'
+      scale_x <- NULL
     } else {
-      fill_col = 'Week_Day'
-      fill_guide = 'Week Day'
+      fill_col <- 'Week_Day'
+      fill_guide <- 'Week Day'
+      group_col <- NULL
+      scale_x <- NULL
     } 
-    ggplot(songs_selected(), aes_string(input$time_type, fill = fill_col)) + 
-      geom_bar() +
-      scale_fill_discrete(name=fill_guide) +
-      theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5, margin = margin(15,0,10,0,"pt")),
+    
+    # establish bar fill and facet (y/n)
+    if (input$time_type == 'Week_Day') {
+      bar <- geom_bar()
+      scale <- scale_fill_viridis("Time of Day",
+                                 option = "magma",
+                                 breaks = c(0, 21600, 43200, 64800, 86340),
+                                 labels = c('0', '6', '12', '18', '24'),
+                                 direction = -1)
+      facet <- NULL
+    } else {
+      bar <- geom_bar()
+      scale <- scale_fill_viridis(fill_guide, 
+                                  discrete=TRUE, 
+                                  direction = -1,
+                                  guide = guide_legend(#nrow = 1, 
+                                                       title.position = "top", 
+                                                       label.position = "right"))
+      facet <- facet_grid(Year ~ .) 
+    }
+    
+    # Convert input to symbol for dplyr
+    g_by <- input$time_type
+    g_by <- sym(g_by)
+    
+    # establish input_field
+    if (input$time_type == 'Date') {
+      input_field <- 'yday(date_time)'
+      bar <- geom_bar(color="grey65")
+      # Plot Data for bplot
+      plot_data <- songs_selected() %>%
+        group_by(x = yday(date_time), Year) %>%
+        summarise(played_count = n_distinct(date_time))
+    } else {
+      input_field <- input$time_type
+      # Plot Data for bplot
+      plot_data <- songs_selected() %>%
+        group_by(x = !! g_by, Year) %>%
+        summarise(played_count = n_distinct(date_time))
+    }
+    
+    tplot <- ggplot(songs_selected(), aes_string(input_field, group = group_col, fill = fill_col)) + 
+      bar +
+      geom_hline(yintercept = 0, color = "grey40", size = .7) + 
+      scale + 
+      scale_x + 
+      theme_minimal() +
+      theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5, margin = margin(15, 0, 10, 0, "pt")), 
+            axis.ticks = element_blank(),
             axis.title.y = element_blank(), 
-            axis.title.x = element_text(size = 14, margin = margin(15,0,-7,0,"pt")),
-            legend.position = "bottom") + 
+            axis.title.x = element_blank(), 
+            axis.text = element_text(size=10), 
+            panel.grid.major.x = element_blank(), 
+            panel.grid.major.y = element_line(color = "grey80", linetype = '56'),
+            panel.grid.minor.x = element_blank(), 
+            panel.grid.minor.y = element_blank(),
+            strip.text.y = element_text(size = 12)) + 
       labs(title = paste('Number of Songs Played Each', xvar_name), 
-           x = xvar_name)
+           x = xvar_name) + 
+      facet
+    
+    # Established which plots are displayed
+    if (input$time_type == 'Week_Day') { 
+      tplot # Only top plot (tplot) is displayed
+    } else {
+      # Both top plot (tplot) and bottom plot (bplot) are displayed using plot_grid
+      bplot <- ggplot(plot_data, aes(x, y=played_count, color=as.factor(Year))) + 
+        geom_hline(yintercept = 0, color = "grey40", size = .7) +
+        geom_line(aes(group = Year), alpha = .7, size = 1) + 
+        geom_point(size = 1.5, alpha = .8) +
+        scale_color_viridis('Year', option = "cividis", discrete=TRUE) + 
+        scale_x +
+        theme_minimal() +
+        theme(axis.ticks = element_blank(), 
+          axis.title.y = element_blank(),
+          axis.title.x = element_blank(),
+          axis.text.y = element_text(size=10), 
+          axis.text.x = element_blank(),
+          panel.grid.major.x = element_blank(),
+          panel.grid.major.y = element_line(color = "grey80", linetype = '56'),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.minor.y = element_blank(), 
+          legend.margin = margin(l = 22, unit = "pt"))
+      plot_grid(tplot, bplot, ncol=1, axis = "lr", align="v", rel_heights = c(4,1)) 
+      }
   })
   
   pan3_tribble <- reactive({ 
@@ -245,102 +364,132 @@ server <- shinyServer(function(input, output) {
   # Data load and cleanup #
   #########################
   
-  #Output Data and plots
+  # Output Data and plots
   
-  #Tab Panel 1 outputs
-  #create output main plot here
+  # Bump Chart Tab Panel Outputs
+  output$rank_plot <- renderPlot({ rank_plot_options() })
+  output$bump_rank_table <- DT::renderDataTable({ DT::datatable(bump_rank() %>% 
+                                                                  select(-rank) %>%
+                                                                  spread(Year, played_count) %>%
+                                                                  arrange(desc(sum_played)), 
+                                                                options = list(pageLength = 5)) })
+  
+  # Top Songs Tab Panel Outputs
   output$top_plot <- renderPlot({ 
-    ggplot(top_songs(), aes(reorder(art_song, n), n), color = "Black") +
+    ggplot(top_songs(), aes(reorder(art_song, n), n)) +
       geom_segment(aes(xend = reorder(art_song, n), yend = 0), color = 'grey40') +
-      geom_point(size = 3) + #aes(colour = viridis(20, option = "D")), 
+      geom_point(size = 3) + 
       coord_flip() +
-      labs(y = "Play Count", x="", title = "Top 10 Songs in Timeframe") +
-      scale_y_continuous(expand=c(0,0), limits = c(0,max(top_songs()$n)+1)) +
-      #scale_color_viridis(discrete = T, name = "Artist") +
-      theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5, margin = margin(15,0,10,0,"pt")),
+      labs(y = "Play Count", x= "", title = "Top 10 Songs in Timeframe") +
+      scale_y_continuous(expand = c(0,0), limits = c(0, max(top_songs()$n) + 1)) +
+      theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5, margin = margin(15, 0, 10, 0, "pt")),
             panel.grid.major.x = element_blank(),
             panel.grid.minor.x = element_blank(),
             panel.grid.major.y = element_line(color = 'grey80', linetype = '56'),
             axis.ticks = element_blank(),
-            axis.text = element_text(size=10),
-            axis.title=element_text(size=11), 
+            axis.text = element_text(size = 10),
+            axis.title = element_text(size = 14), 
             panel.border = element_blank(),
             panel.background = element_blank()) 
-    })
-  #output$top_songs_table <- DT::renderDataTable({ DT::datatable(top_songs()) })
-  output$table <- DT::renderDataTable({ DT::datatable(songs_selected()[2:6], options = list(pageLength = 10)) })
+  })
   
-  #Tab Panel 2 outputs
-  output$main_plot <- renderPlot({ main_plot_options() })
-  output$bump_rank_table <- DT::renderDataTable({ DT::datatable(bump_rank() %>% 
-                                                                   select(-rank) %>%
-                                                                   spread(Month, played_count) %>%
-                                                                   arrange(desc(sum_played))) })
+  # Data frame for top songs
+  output$table <- DT::renderDataTable({ DT::datatable(songs_selected()[2:6], options = list(pageLength = 5)) })
 
-  #Tab Panel 3 outputs
-  output$second_plot <- renderPlot({ plot2_options() })
-  #add dataframes that show top artist and album by time grouping
-  output$pan3_table <- DT::renderDataTable({ DT::datatable(pan3_tribble(), options = list(pageLength = 10)) })
+  # Frequency plot Tab Panel outputs
+  output$freq_plot <- renderPlot({ freq_plot_options() })
+
+  # add dataframes that show top artist and album by time grouping
+  output$pan3_table <- DT::renderDataTable({ DT::datatable(pan3_tribble(), options = list(pageLength = 5, scrollX = TRUE)) })
   
-  #Tab Panel 4 outputs
+  # Tab Panel 4 outputs
+  # No options, text loaded from markdown document
   
+  # Side Panel Download Outputs
+  # Raw dataset
+  output$download_raw <- downloadHandler(
+    filename = function() {
+      paste("songs_raw_", format(Sys.time(), "%Y%m%d"), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(raw_data, file, row.names = FALSE)
+    })
   
-  #Close the server definition
+  # Cleaned and filtered dataset
+  output$download_filtered <- downloadHandler(
+    filename = function() {
+      paste("songs_filtered_", format(Sys.time(), "%Y%m%d"), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(sample_n(songs_selected(), 30), file, row.names = FALSE)
+    })
+  
+  # Close the server definition
 })
 
 ##################
 # User Interface #
 ##################
 
-#generic line initiating the UI
+# Generic line initiating the UI
 ui <- shinyUI(fluidPage(
+  # Add a title
+  titlePanel("Alexa Listening History"),
   
-  #Add a title
-  titlePanel("Alexa Songs Played (2018)"),
-  
-  #This creates a layout with a left sidebar and main section
+  # This creates a layout with a left sidebar and main section
   sidebarLayout(
     
-    #beginning of sidebar section
-    #usually includes inputs
+    # beginning of sidebar section
     sidebarPanel(
       dateRangeInput("date_range", "Date Range:", 
                      start = min_date,
                      end = max_date,
                      min = min_date,
                      max = max_date),
+      
+      radioButtons("time_type", "Time Grouping:",
+                   time_group_pairs),
+      
       radioButtons("y_axis", "Rank by:",
                    c("Artist" = "main_artist",
                      "Album" = "album")),
-      radioButtons("time_type", "Time Grouping:",
-                   time_group_pairs)
+      
+      hr(),
+      
+      fluidRow(#cellWidths = c("50%", "50%"), #cellArgs = list(style="padding: 6px"), #splitLayout(
+        div(style="display:inline-block",
+            column(width = 6, downloadButton("download_raw", "Raw Data Sample"))),
+        div(style="display:inline-block",
+            column(width = 6, downloadButton("download_filtered", "Filtered Data Sample")))), #, style="float:right"
+      width = 3
     ),
     
-    #beginning of main section
+    # Main section
     mainPanel(tabsetPanel(
-      tabPanel("Top Songs PLayed:", 
-               plotOutput(outputId = 'top_plot'),
-               #DT::dataTableOutput(outputId ='top_songs_table'),
-               DT::dataTableOutput(outputId ='table')),
-      tabPanel("Month by Month Popularity:", 
-               plotOutput(outputId = 'main_plot'),
-               DT::dataTableOutput(outputId ='bump_rank_table')),
       tabPanel("Frequency Plot:", 
-               plotOutput(outputId = 'second_plot'),
+               plotOutput(outputId = 'freq_plot', height = "500px"),
+               hr(),
                DT::dataTableOutput(outputId = 'pan3_table')),
-      tabPanel("About:", 
-               "Inspirations: http://www.jayblanco.com/blog/2016/7/9/using-lastfm-and-r-to-understand-my-music-listening-habits
-               \n
-               http://data-slinky.com/2016/07/31/bump_charts.html"))
+      tabPanel("Year to Year Popularity:", 
+               plotOutput(outputId = 'rank_plot', height = "500px"),
+               hr(),
+               DT::dataTableOutput(outputId ='bump_rank_table')),
+      tabPanel("Top Songs PLayed:", 
+               plotOutput(outputId = 'top_plot', height = "500px"),
+               hr(),
+               DT::dataTableOutput(outputId ='table')),
+      tabPanel("About:", includeMarkdown("about.md"))
+      )
+      
       )
   )
   
-  #Close the UI definition
+  # Close the UI definition
 ))
 
 ##############
 # Launch App #
 ##############
 
-#generic line that launches the app
+# Launch the app
 shinyApp(ui = ui, server = server)
