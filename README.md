@@ -1,6 +1,6 @@
 ## Alexa Songs R Shiny Dashboard
 
-This R Shiny dashboard displays data about songs that are played via Amazon Alexa. The data is stored in Google Spreadsheets via an IFTTT application. The dashboard contains four tabs; Frequency Plot, Year to Year Popularity, Top Songs Played, and About. The user can group frequency plots based on four different time units; Day, Week, Month, and Day of Week. The Year to Year Popularity tab contains a bump chart that can be grouped based on the top five most popular Artists or Albums played. The entire dashboard can be filtered with a date range.
+This R Shiny dashboard displays data about songs that are played via Amazon Alexa. The data is stored in Google Spreadsheets via an IFTTT application. The dashboard contains four tabs: Frequency Plot, Year to Year Popularity, Top Songs Played, and About. The user can group frequency plots based on four different time units: Day, Week, Month, and Day of Week. The Year to Year Popularity tab contains a bump chart that can be grouped based on the top five most popular Artists or Albums played. The entire dashboard can be filtered with a date range.
 
 #### Frequency Plots Tab
 ![AlexaListeningHistoryFreqPlots](https://user-images.githubusercontent.com/7990117/54166228-9f205900-443a-11e9-8a85-7b21a69fe8c6.png)
