@@ -1,12 +1,22 @@
+.gitignore
+
 # History files
 .Rhistory
 .Rapp.history
 
+# Session Data files
+.RData
+.RDataTmp
+
 # Example code in package build process
 *-Ex.R
 
+# User-specific files
+.Ruserdata
+
 # RStudio files
 .Rproj.user/
+*.Rproj
 
 # produced vignettes
 vignettes/*.html
@@ -15,8 +25,13 @@ vignettes/*.pdf
 # OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
 .httr-oauth
 
+/data
+/rsconnect
 alexa_songs_temp\.csv
-
 app_template\.R
-
 songs_played\.R
+app_gsheetarchive\.R
+bump_chart_year.R
+
+/secrets
+.secrets

@@ -1,7 +1,7 @@
 
 # import libraries
 library(shiny)
-library("googlesheets")
+library(readr)
 library(dplyr)
 library(ggplot2)
 library(viridis)
@@ -9,38 +9,33 @@ library(ggrepel)
 library(datetime)
 library(lubridate)
 library(tidyr)
+library(purrr)
 library(rlang)
-library(here)
+
 library(markdown)
 library(cowplot)
 
+
 # Create here path for relative directory
+# Set here directory
+here::i_am("app.R") 
+library(here)
 path <- here()
-
-# Load my sheets (temp commented out, using csv until testing done)
-my_sheets <- gs_ls()
-all_sheets <- grep("Songs played", my_sheets$sheet_title)
-all_sheets <- my_sheets$sheet_title[all_sheets]
-
-# no longer just one sheet - songs_played <- gs_title("Songs played")
-# no longer just one sheet - sp_sheets <- gs_ws_ls(songs_played)
+data_path <- here("data")
 
 # Import data
 cols <- c("date_time", "artist", "song", "album")
-alexa_songs <- do.call("rbind", 
-                       lapply(all_sheets, 
-                              FUN=function(files) 
-                              {songs_played <- gs_title(files)
-                              sp_sheets <- gs_ws_ls(songs_played)
-                              songs_played %>%
-                                gs_read(ws = sp_sheets[1], col_names = cols)}))
+cols_t <- c("cccc")
 
-
-# no longer just one sheet - alexa_songs <- songs_played %>%
-# no longer just one sheet -   gs_read(ws = sp_sheets[1], col_names = cols)
+alexa_songs <- list.files(path = data_path, pattern = "^Songs_played", full.names = T) %>% 
+  map(~read_csv(., col_names=cols, col_types=cols_t), as.data.frame) %>% 
+  list_rbind
 
 # Copy for raw data export
-raw_data <- alexa_songs[sample(nrow(alexa_songs), 30), ]
+# raw_data <- alexa_songs[base::sample(nrow(alexa_songs), 30), ]
+# sample_n(songs_selected(), 30), file, row.names = FALSE
+# raw_data <- slice_sample(alexa_songs, 30)
+raw_data <- alexa_songs
 
 # Clean data
 alexa_songs$date_time <- strptime(alexa_songs$date_time, format = "%B %e, %Y at %I:%M%p")
@@ -80,7 +75,7 @@ alexa_songs <- mutate(alexa_songs,
                       Time = as.time(strftime(date_time, format = "%H:%M")),
                       id = row_number())
 
-# Keep only songsthat were not skipped (if two songs have the same time-stamp, the one with a lower id was skipped)
+# Keep only songs that were not skipped (if two songs have the same time-stamp, the one with a lower id was skipped)
 alexa_songs <- alexa_songs %>% 
   group_by(date_time) %>% 
   top_n(1, id) %>% 
@@ -412,7 +407,7 @@ server <- shinyServer(function(input, output) {
       paste("songs_raw_", format(Sys.time(), "%Y%m%d"), ".csv", sep = "")
     },
     content = function(file) {
-      write.csv(raw_data, file, row.names = FALSE)
+      write.csv(sample_n(raw_data, 30), file, row.names = FALSE)
     })
   
   # Cleaned and filtered dataset
